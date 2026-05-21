@@ -1,338 +1,234 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 
-const CATEGORIES_INCOME = ["Gaji", "Bonus", "Freelance", "Investasi", "Penjualan", "Lainnya"];
-const CATEGORIES_EXPENSE = ["Makan & Minum", "Transport", "Belanja", "Tagihan", "Kesehatan", "Hiburan", "Pendidikan", "Lainnya"];
-
-const formatRp = (n) =>
-  new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(n || 0);
-
-const today = () => new Date().toISOString().split("T")[0];
-
-const STORAGE_KEY = "keuangan_data_v1";
-
-export default function App() {
-  const [transactions, setTransactions] = useState([]);
-  const [view, setView] = useState("dashboard"); // dashboard | form | history | export
-  const [type, setType] = useState("income");
-  const [form, setForm] = useState({ amount: "", category: "", note: "", date: today() });
-  const [filterMonth, setFilterMonth] = useState(new Date().toISOString().slice(0, 7));
-  const [toast, setToast] = useState(null);
-  const [deleteId, setDeleteId] = useState(null);
-
-  // Load from storage
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setTransactions(JSON.parse(raw));
-    } catch {}
-  }, []);
-
-  // Save to storage
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
-    } catch {}
-  }, [transactions]);
-
-  const showToast = (msg, color = "#22c55e") => {
-    setToast({ msg, color });
-    setTimeout(() => setToast(null), 2200);
-  };
-
-  const filtered = transactions.filter((t) => t.date.startsWith(filterMonth));
-  const totalIn = filtered.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const totalOut = filtered.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-  const balance = totalIn - totalOut;
-
-  const addTransaction = () => {
-    const amt = parseFloat(form.amount.replace(/\D/g, ""));
-    if (!amt || amt <= 0) return showToast("Masukkan jumlah yang valid", "#ef4444");
-    if (!form.category) return showToast("Pilih kategori", "#ef4444");
-    const tx = {
-      id: Date.now(),
-      type,
-      amount: amt,
-      category: form.category,
-      note: form.note,
-      date: form.date,
-    };
-    setTransactions((prev) => [tx, ...prev]);
-    setForm({ amount: "", category: "", note: "", date: today() });
-    setView("dashboard");
-    showToast(type === "income" ? "✅ Pemasukan dicatat!" : "✅ Pengeluaran dicatat!");
-  };
-
-  const deleteTransaction = (id) => {
-    setTransactions((prev) => prev.filter((t) => t.id !== id));
-    setDeleteId(null);
-    showToast("🗑️ Transaksi dihapus", "#f59e0b");
-  };
-
-  const exportExcel = () => {
-    const months = [...new Set(transactions.map((t) => t.date.slice(0, 7)))].sort().reverse();
-    const wb = XLSX.utils.book_new();
-
-    // Summary sheet
-    const summaryData = [["Bulan", "Pemasukan", "Pengeluaran", "Saldo"]];
-    months.forEach((m) => {
-      const mTx = transactions.filter((t) => t.date.startsWith(m));
-      const inc = mTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-      const exp = mTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-      summaryData.push([m, inc, exp, inc - exp]);
-    });
-    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
-    wsSummary["!cols"] = [{ wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
-    XLSX.utils.book_append_sheet(wb, wsSummary, "Ringkasan");
-
-    // All transactions sheet
-    const rows = [["Tanggal", "Jenis", "Kategori", "Jumlah", "Catatan"]];
-    [...transactions].sort((a, b) => b.date.localeCompare(a.date)).forEach((t) => {
-      rows.push([t.date, t.type === "income" ? "Pemasukan" : "Pengeluaran", t.category, t.amount, t.note]);
-    });
-    const wsAll = XLSX.utils.aoa_to_sheet(rows);
-    wsAll["!cols"] = [{ wch: 12 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 30 }];
-    XLSX.utils.book_append_sheet(wb, wsAll, "Semua Transaksi");
-
-    // Per-month sheets
-    months.slice(0, 6).forEach((m) => {
-      const mTx = transactions.filter((t) => t.date.startsWith(m)).sort((a, b) => b.date.localeCompare(a.date));
-      const mRows = [["Tanggal", "Jenis", "Kategori", "Jumlah", "Catatan"]];
-      mTx.forEach((t) => mRows.push([t.date, t.type === "income" ? "Pemasukan" : "Pengeluaran", t.category, t.amount, t.note]));
-      const inc = mTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-      const exp = mTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-      mRows.push([], ["", "Total Pemasukan", "", inc, ""], ["", "Total Pengeluaran", "", exp, ""], ["", "Saldo", "", inc - exp, ""]);
-      const ws = XLSX.utils.aoa_to_sheet(mRows);
-      ws["!cols"] = [{ wch: 12 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 30 }];
-      XLSX.utils.book_append_sheet(wb, ws, m);
-    });
-
-    XLSX.writeFile(wb, `Keuangan_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    showToast("📊 File Excel berhasil diunduh!");
-  };
-
-  const fmtAmt = (v) => {
-    const raw = v.replace(/\D/g, "");
-    if (!raw) return "";
-    return parseInt(raw, 10).toLocaleString("id-ID");
-  };
-
-  const recentTx = transactions.slice(0, 5);
-
-  return (
-    <div style={{ fontFamily: "'Nunito', sans-serif", background: "#0f0f14", minHeight: "100vh", maxWidth: 430, margin: "0 auto", color: "#f0f0f5", position: "relative", paddingBottom: 80 }}>
-      <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
-
-      {/* Toast */}
-      {toast && (
-        <div style={{ position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", background: toast.color, color: "#fff", borderRadius: 14, padding: "10px 22px", fontWeight: 700, zIndex: 999, fontSize: 14, boxShadow: "0 4px 20px rgba(0,0,0,0.4)", whiteSpace: "nowrap" }}>
-          {toast.msg}
-        </div>
-      )}
-
-      {/* Delete Confirm Modal */}
-      {deleteId && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 998 }}>
-          <div style={{ background: "#1e1e2e", borderRadius: 20, padding: 28, width: 300, textAlign: "center" }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🗑️</div>
-            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 8 }}>Hapus transaksi?</div>
-            <div style={{ color: "#888", fontSize: 13, marginBottom: 22 }}>Data ini akan dihapus permanen.</div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => setDeleteId(null)} style={{ flex: 1, padding: "11px", borderRadius: 12, border: "1.5px solid #333", background: "transparent", color: "#aaa", fontWeight: 700, cursor: "pointer" }}>Batal</button>
-              <button onClick={() => deleteTransaction(deleteId)} style={{ flex: 1, padding: "11px", borderRadius: 12, border: "none", background: "#ef4444", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Hapus</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Header */}
-      <div style={{ background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 60%, #a855f7 100%)", padding: "28px 22px 60px", borderRadius: "0 0 36px 36px", position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", top: -40, right: -40, width: 150, height: 150, background: "rgba(255,255,255,0.06)", borderRadius: "50%" }} />
-        <div style={{ position: "absolute", bottom: -20, left: -30, width: 120, height: 120, background: "rgba(255,255,255,0.05)", borderRadius: "50%" }} />
-        <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: 0.5, marginBottom: 4 }}>💰 KasKu</div>
-        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 22 }}>Pencatat Keuangan Pribadi</div>
-        <div style={{ background: "rgba(255,255,255,0.12)", backdropFilter: "blur(10px)", borderRadius: 20, padding: "18px 22px" }}>
-          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>Saldo Bulan Ini</div>
-          <div style={{ fontWeight: 900, fontSize: 32, letterSpacing: -1 }}>{formatRp(balance)}</div>
-          <div style={{ display: "flex", gap: 20, marginTop: 14 }}>
-            <div>
-              <div style={{ fontSize: 11, opacity: 0.75 }}>↑ Pemasukan</div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: "#86efac" }}>{formatRp(totalIn)}</div>
-            </div>
-            <div style={{ width: 1, background: "rgba(255,255,255,0.2)" }} />
-            <div>
-              <div style={{ fontSize: 11, opacity: 0.75 }}>↓ Pengeluaran</div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: "#fca5a5" }}>{formatRp(totalOut)}</div>
-            </div>
-          </div>
-        </div>
-        {/* Month filter */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14 }}>
-          <span style={{ fontSize: 12, opacity: 0.8 }}>📅 Bulan:</span>
-          <input type="month" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)}
-            style={{ background: "rgba(255,255,255,0.15)", border: "none", borderRadius: 10, padding: "6px 12px", color: "#fff", fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer" }} />
-        </div>
-      </div>
-
-      {/* Content */}
-      <div style={{ padding: "0 16px", marginTop: -20 }}>
-
-        {/* DASHBOARD */}
-        {view === "dashboard" && (
-          <>
-            {/* Quick Actions */}
-            <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-              <button onClick={() => { setType("income"); setView("form"); }} style={{ flex: 1, background: "linear-gradient(135deg, #22c55e, #16a34a)", border: "none", borderRadius: 16, padding: "16px", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <span style={{ fontSize: 24 }}>➕</span>
-                <span>Pemasukan</span>
-              </button>
-              <button onClick={() => { setType("expense"); setView("form"); }} style={{ flex: 1, background: "linear-gradient(135deg, #ef4444, #dc2626)", border: "none", borderRadius: 16, padding: "16px", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <span style={{ fontSize: 24 }}>➖</span>
-                <span>Pengeluaran</span>
-              </button>
-            </div>
-
-            {/* Recent */}
-            <div style={{ background: "#1a1a26", borderRadius: 20, padding: "18px 16px", marginBottom: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                <span style={{ fontWeight: 800, fontSize: 15 }}>Transaksi Terbaru</span>
-                <button onClick={() => setView("history")} style={{ background: "none", border: "none", color: "#8b5cf6", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Lihat Semua →</button>
-              </div>
-              {recentTx.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "24px 0", color: "#555", fontSize: 14 }}>
-                  <div style={{ fontSize: 36, marginBottom: 8 }}>📭</div>
-                  Belum ada transaksi
-                </div>
-              ) : recentTx.map((t) => (
-                <TxItem key={t.id} t={t} onDelete={() => setDeleteId(t.id)} />
-              ))}
-            </div>
-
-            {/* Export Button */}
-            <button onClick={exportExcel} style={{ width: "100%", background: "#1a1a26", border: "1.5px solid #2d2d40", borderRadius: 16, padding: "14px", color: "#a78bfa", fontWeight: 800, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-              <span style={{ fontSize: 20 }}>📊</span> Export ke Excel (.xlsx)
-            </button>
-          </>
-        )}
-
-        {/* FORM */}
-        {view === "form" && (
-          <div style={{ background: "#1a1a26", borderRadius: 20, padding: "22px 18px", marginTop: 4 }}>
-            <div style={{ fontWeight: 900, fontSize: 17, marginBottom: 18, display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 26 }}>{type === "income" ? "📥" : "📤"}</span>
-              Tambah {type === "income" ? "Pemasukan" : "Pengeluaran"}
-            </div>
-
-            {/* Type Toggle */}
-            <div style={{ display: "flex", background: "#12121c", borderRadius: 14, padding: 4, marginBottom: 18 }}>
-              {["income", "expense"].map((t) => (
-                <button key={t} onClick={() => { setType(t); setForm((f) => ({ ...f, category: "" })); }}
-                  style={{ flex: 1, padding: "10px", borderRadius: 10, border: "none", background: type === t ? (t === "income" ? "#22c55e" : "#ef4444") : "transparent", color: type === t ? "#fff" : "#666", fontWeight: 800, cursor: "pointer", transition: "all 0.2s", fontSize: 13 }}>
-                  {t === "income" ? "➕ Pemasukan" : "➖ Pengeluaran"}
-                </button>
-              ))}
-            </div>
-
-            <label style={labelStyle}>Jumlah (Rp)</label>
-            <div style={{ position: "relative", marginBottom: 14 }}>
-              <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#6366f1", fontWeight: 800 }}>Rp</span>
-              <input value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: fmtAmt(e.target.value) }))}
-                placeholder="0" inputMode="numeric"
-                style={{ ...inputStyle, paddingLeft: 44, fontSize: 20, fontWeight: 800 }} />
-            </div>
-
-            <label style={labelStyle}>Kategori</label>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-              {(type === "income" ? CATEGORIES_INCOME : CATEGORIES_EXPENSE).map((c) => (
-                <button key={c} onClick={() => setForm((f) => ({ ...f, category: c }))}
-                  style={{ padding: "8px 14px", borderRadius: 10, border: form.category === c ? "none" : "1.5px solid #2d2d40", background: form.category === c ? "#6366f1" : "transparent", color: form.category === c ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                  {c}
-                </button>
-              ))}
-            </div>
-
-            <label style={labelStyle}>Catatan (Opsional)</label>
-            <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
-              placeholder="Contoh: Makan siang bersama klien"
-              style={{ ...inputStyle, marginBottom: 14 }} />
-
-            <label style={labelStyle}>Tanggal</label>
-            <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
-              style={{ ...inputStyle, marginBottom: 22 }} />
-
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => setView("dashboard")} style={{ flex: 1, padding: 14, borderRadius: 14, border: "1.5px solid #2d2d40", background: "transparent", color: "#888", fontWeight: 700, cursor: "pointer" }}>Batal</button>
-              <button onClick={addTransaction} style={{ flex: 2, padding: 14, borderRadius: 14, border: "none", background: type === "income" ? "linear-gradient(135deg,#22c55e,#16a34a)" : "linear-gradient(135deg,#ef4444,#dc2626)", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer" }}>
-                Simpan
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* HISTORY */}
-        {view === "history" && (
-          <div style={{ background: "#1a1a26", borderRadius: 20, padding: "18px 16px", marginTop: 4 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-              <button onClick={() => setView("dashboard")} style={{ background: "none", border: "none", color: "#8b5cf6", fontWeight: 800, fontSize: 18, cursor: "pointer" }}>←</button>
-              <span style={{ fontWeight: 900, fontSize: 16 }}>Semua Transaksi</span>
-              <span style={{ marginLeft: "auto", fontSize: 13, color: "#555" }}>{filtered.length} data</span>
-            </div>
-            {filtered.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "32px 0", color: "#555" }}>
-                <div style={{ fontSize: 40 }}>📭</div>
-                <div style={{ marginTop: 8 }}>Tidak ada transaksi di bulan ini</div>
-              </div>
-            ) : [...filtered].sort((a, b) => b.date.localeCompare(a.date)).map((t) => (
-              <TxItem key={t.id} t={t} onDelete={() => setDeleteId(t.id)} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Bottom Nav */}
-      <nav style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, background: "#13131f", borderTop: "1px solid #1e1e2e", display: "flex", padding: "10px 0 16px" }}>
-        {[
-          { id: "dashboard", icon: "🏠", label: "Beranda" },
-          { id: "form", icon: "➕", label: "Catat" },
-          { id: "history", icon: "📋", label: "Riwayat" },
-        ].map((nav) => (
-          <button key={nav.id} onClick={() => { if (nav.id === "form") { setType("income"); } setView(nav.id); }}
-            style={{ flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", opacity: view === nav.id ? 1 : 0.4, transition: "opacity 0.2s" }}>
-            <span style={{ fontSize: 22 }}>{nav.icon}</span>
-            <span style={{ fontSize: 11, fontWeight: 700, color: view === nav.id ? "#8b5cf6" : "#fff" }}>{nav.label}</span>
-          </button>
-        ))}
-      </nav>
-    </div>
-  );
-}
-
-function TxItem({ t, onDelete }) {
-  const isIn = t.type === "income";
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: "1px solid #1e1e2e" }}>
-      <div style={{ width: 42, height: 42, borderRadius: 14, background: isIn ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>
-        {isIn ? "📥" : "📤"}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 800, fontSize: 14 }}>{t.category}</div>
-        <div style={{ fontSize: 12, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.note || t.date}</div>
-      </div>
-      <div style={{ textAlign: "right" }}>
-        <div style={{ fontWeight: 900, fontSize: 14, color: isIn ? "#86efac" : "#fca5a5" }}>
-          {isIn ? "+" : "-"}{formatRp(t.amount)}
-        </div>
-        <div style={{ fontSize: 11, color: "#444" }}>{t.date}</div>
-      </div>
-      <button onClick={onDelete} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: 18, padding: "0 4px" }}>×</button>
-    </div>
-  );
-}
-
-const inputStyle = {
-  width: "100%", background: "#12121c", border: "1.5px solid #2d2d40", borderRadius: 14,
-  padding: "13px 16px", color: "#f0f0f5", fontFamily: "inherit", fontWeight: 600, fontSize: 15,
-  boxSizing: "border-box", outline: "none",
+const LOKASI = ["Sky House BSD","Treepark City Cikokol"];
+const SHIFT  = ["Shift 1","Shift 2"];
+const KAT_IN  = ["Omset Penjualan","Denda Customer"];
+const KAT_OUT = ["Operasional","Gaji Karyawan","Belanja","Tagihan","Transportasi","Peralatan","Lainnya"];
+const ROLES = {
+  owner:{label:"Owner",color:"#c084fc",bg:"rgba(192,132,252,.15)",canEdit:true,canDelete:true,canSetting:true},
+  admin:{label:"Admin",color:"#fb923c",bg:"rgba(251,146,60,.15)",canEdit:true,canDelete:true,canSetting:true},
+  user: {label:"User", color:"#60a5fa",bg:"rgba(96,165,250,.15)",canEdit:false,canDelete:false,canSetting:false},
+  kasir:{label:"Kasir",color:"#34d399",bg:"rgba(52,211,153,.15)",canEdit:false,canDelete:false,canSetting:false},
 };
+const UK="sg_u5",TK="sg_t5";
+const DEF=[{id:1,username:"owner",password:"owner123",role:"owner"},{id:2,username:"admin",password:"admin123",role:"admin"},{id:3,username:"kasir",password:"kasir123",role:"kasir"}];
+const rp=n=>new Intl.NumberFormat("id-ID",{style:"currency",currency:"IDR",minimumFractionDigits:0}).format(n||0);
+const fmt=v=>{const r=v.replace(/\D/g,"");return r?parseInt(r).toLocaleString("id-ID"):""};
+const nowStr=()=>new Date().toLocaleString("id-ID");
+const G="#f5c842",BG0="#07080f",BG1="#0f1018",BG2="#181924",BG3="#20222e",BD="#252736";
+const GR="#34d399",RD="#f87171",TX="#f0f0f8",TM="#8888aa",TQ="#44455a";
+const IS={width:"100%",background:BG3,border:"1.5px solid "+BD,borderRadius:14,padding:"13px 16px",color:TX,fontFamily:"inherit",fontWeight:600,fontSize:14,boxSizing:"border-box",outline:"none"};
+const LS={display:"block",fontSize:10,fontWeight:800,color:TM,marginBottom:8,textTransform:"uppercase",letterSpacing:1.2};
+const card={background:BG2,borderRadius:20,border:"1px solid "+BD};
 
-const labelStyle = { display: "block", fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 };
+function Chips({opts,val,set,color}){
+  return <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:16}}>{opts.map(o=><button key={o} onClick={()=>set(o)} style={{padding:"8px 16px",borderRadius:30,cursor:"pointer",fontWeight:700,fontSize:12,border:val===o?"none":"1.5px solid "+BD,background:val===o?color:"transparent",color:val===o?"#000":TM,boxShadow:val===o?"0 2px 12px "+color+"55":"none"}}>{o}</button>)}</div>;
+}
+
+function Bd({children,onClose,bottom}){
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",display:"flex",alignItems:bottom?"flex-end":"center",justifyContent:"center",zIndex:999,backdropFilter:"blur(6px)"}} onClick={onClose}><div onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:430}}>{children}</div></div>;
+}
+
+function TxRow({t,role,onDel,onEdit}){
+  const [open,setOpen]=useState(false);
+  const p=ROLES[role]||ROLES.kasir;
+  const inc=t.type==="income";
+  return <div style={{borderBottom:"1px solid "+BD}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 0",cursor:"pointer"}}>
+      <div style={{width:44,height:44,borderRadius:14,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,fontWeight:900,background:inc?"rgba(52,211,153,.1)":"rgba(248,113,113,.1)",color:inc?GR:RD,border:"1px solid "+(inc?"rgba(52,211,153,.2)":"rgba(248,113,113,.2)")}}>
+        {inc?"+":"-"}
+      </div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontWeight:800,fontSize:13,color:TX}}>{t.category}{t.lokasi?" | "+t.lokasi:""}</div>
+        <div style={{fontSize:11,color:TQ,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:2}}>{t.shift?t.shift+" | ":""}{t.note||t.datetime}</div>
+      </div>
+      <div style={{textAlign:"right",flexShrink:0,marginRight:6}}>
+        <div style={{fontWeight:900,fontSize:13,color:inc?GR:RD}}>{inc?"+":"-"}{rp(t.amount)}</div>
+        <div style={{fontSize:10,color:TQ,marginTop:1}}>{(t.datetime||"").slice(0,8)}</div>
+      </div>
+      <span style={{color:TQ,fontSize:12}}>{open?"^":"v"}</span>
+    </div>
+    {open&&<div style={{background:BG0,borderRadius:14,padding:14,marginBottom:12,border:"1px solid "+BD}}>
+      {t.penerima&&<div style={{marginBottom:6,fontSize:12,color:TM}}>Penerima: <b style={{color:TX}}>{t.penerima}</b></div>}
+      {t.user&&<div style={{marginBottom:6,fontSize:12,color:TM}}>Dicatat: <b style={{color:TX}}>{t.user}</b></div>}
+      <div style={{fontSize:12,color:TM,marginBottom:t.photo?10:0}}>Waktu: <b style={{color:TX}}>{t.datetime}</b></div>
+      {t.photo&&<img src={t.photo} alt="bukti" style={{width:"100%",borderRadius:12,maxHeight:200,objectFit:"cover",marginTop:8}}/>}
+      {(p.canEdit||p.canDelete)&&<div style={{display:"flex",gap:8,marginTop:12}}>
+        {p.canEdit&&<button onClick={onEdit} style={{flex:1,padding:9,borderRadius:11,border:"none",background:"rgba(251,146,60,.12)",color:"#fb923c",fontWeight:700,fontSize:12,cursor:"pointer"}}>Edit Nominal</button>}
+        {p.canDelete&&<button onClick={onDel} style={{flex:1,padding:9,borderRadius:11,border:"none",background:"rgba(248,113,113,.12)",color:RD,fontWeight:700,fontSize:12,cursor:"pointer"}}>Hapus</button>}
+      </div>}
+    </div>}
+  </div>;
+}
+
+function exportXLS(txs){
+  const wb=XLSX.utils.book_new();
+  const ms=[...new Set(txs.map(t=>t.datetime.slice(0,7)))].sort().reverse();
+  const sd=[["Bulan","Pemasukan","Pengeluaran","Saldo"]];
+  ms.forEach(m=>{const mx=txs.filter(t=>t.datetime.startsWith(m));const i=mx.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);const e=mx.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);sd.push([m,i,e,i-e]);});
+  const w0=XLSX.utils.aoa_to_sheet(sd);w0["!cols"]=[{wch:14},{wch:18},{wch:18},{wch:18}];XLSX.utils.book_append_sheet(wb,w0,"Ringkasan");
+  const ar=[["Waktu","Jenis","Lokasi","Shift","Kategori","Jumlah","Catatan","Penerima","User"]];
+  [...txs].sort((a,b)=>b.datetime.localeCompare(a.datetime)).forEach(t=>ar.push([t.datetime,t.type==="income"?"Pemasukan":"Pengeluaran",t.lokasi||"-",t.shift||"-",t.category,t.amount,t.note||"-",t.penerima||"-",t.user||"-"]));
+  const w1=XLSX.utils.aoa_to_sheet(ar);w1["!cols"]=[{wch:18},{wch:14},{wch:20},{wch:10},{wch:20},{wch:16},{wch:28},{wch:20},{wch:12}];XLSX.utils.book_append_sheet(wb,w1,"Transaksi");
+  XLSX.writeFile(wb,"OmsetSayyGroup_"+new Date().toISOString().slice(0,10)+".xlsx");
+}
+function exportPDF(txs){
+  const ti=txs.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const to=txs.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const rows=[...txs].sort((a,b)=>b.datetime.localeCompare(a.datetime)).map(t=>"<tr><td>"+t.datetime+"</td><td style='color:"+(t.type==="income"?"green":"red")+"'>"+(t.type==="income"?"Pemasukan":"Pengeluaran")+"</td><td>"+t.category+"</td><td>"+rp(t.amount)+"</td><td>"+(t.note||"-")+"</td></tr>").join("");
+  const w=window.open("","_blank");
+  w.document.write("<html><head><title>Laporan SayyGroup</title><style>body{font-family:Arial;font-size:12px;padding:20px}h2{text-align:center;color:#b45309}table{width:100%;border-collapse:collapse}th{background:#1e293b;color:#f59e0b;padding:8px}td{padding:6px 8px;border-bottom:1px solid #eee}</style></head><body><h2>Laporan Omset SayyGroup</h2><p style='text-align:center'>Dicetak: "+nowStr()+"</p><p><b style='color:green'>Masuk: "+rp(ti)+"</b> | <b style='color:red'>Keluar: "+rp(to)+"</b> | <b>Saldo: "+rp(ti-to)+"</b></p><table><thead><tr><th>Waktu</th><th>Jenis</th><th>Kategori</th><th>Jumlah</th><th>Catatan</th></tr></thead><tbody>"+rows+"</tbody></table></body></html>");
+  w.document.close();w.print();
+}
+
+export default function App(){
+  const [users,setUsers]=useState([]);
+  const [sess,setSess]=useState(null);
+  const [lf,setLf]=useState({u:"",p:""});
+  const [le,setLe]=useState("");
+  const [txs,setTxs]=useState([]);
+  const [view,setView]=useState("dash");
+  const [type,setType]=useState("income");
+  const [month,setMonth]=useState(new Date().toISOString().slice(0,7));
+  const [toast,setToast]=useState(null);
+  const [delId,setDelId]=useState(null);
+  const [editT,setEditT]=useState(null);
+  const [expM,setExpM]=useState(false);
+  const [stab,setStab]=useState("members");
+  const [newU,setNewU]=useState({username:"",password:"",role:"kasir"});
+  const [editU,setEditU]=useState(null);
+  const [delU,setDelU]=useState(null);
+  const [clock,setClock]=useState(new Date());
+  const [form,setForm]=useState({amt:"",lok:"",sh:"",cat:"",note:"",recv:"",photo:null});
+  const fRef=useRef();
+
+  useEffect(()=>{try{const u=localStorage.getItem(UK);setUsers(u?JSON.parse(u):DEF);const t=localStorage.getItem(TK);if(t)setTxs(JSON.parse(t));}catch{setUsers(DEF);}},[]);
+  useEffect(()=>{try{localStorage.setItem(UK,JSON.stringify(users));}catch{}},[users]);
+  useEffect(()=>{try{localStorage.setItem(TK,JSON.stringify(txs));}catch{}},[txs]);
+  useEffect(()=>{const id=setInterval(()=>setClock(new Date()),1000);return()=>clearInterval(id);},[]);
+
+  const toast2=(m,c=GR)=>{setToast({m,c});setTimeout(()=>setToast(null),2400);};
+  const login=()=>{
+    const u=users.find(x=>x.username.toLowerCase()===lf.u.toLowerCase());
+    if(!u||u.password!==lf.p)return setLe("Username atau password salah");
+    setSess({id:u.id,u:u.username,role:u.role});setLe("");
+  };
+
+  const role=sess?.role||"kasir";
+  const perm=ROLES[role]||ROLES.kasir;
+  const allIn=txs.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const allOut=txs.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const saldo=allIn-allOut;
+  const dk=clock.getDate().toString().padStart(2,"0")+"/"+(clock.getMonth()+1).toString().padStart(2,"0")+"/"+clock.getFullYear();
+  const todayTxs=txs.filter(t=>(t.datetime||"").startsWith(dk));
+  const todayIn=todayTxs.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const todayOut=todayTxs.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const fil=txs.filter(t=>(t.datetime||"").includes("/"+month.slice(5)+"/"+month.slice(0,4)));
+  const totI=fil.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const totO=fil.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const timeStr=clock.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  const dateStr=clock.toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+
+  const saveTx=()=>{
+    const a=parseFloat(form.amt.replace(/\D/g,""));
+    if(!a||a<=0)return toast2("Masukkan jumlah yang valid",RD);
+    if(type==="income"&&!form.lok)return toast2("Pilih lokasi",RD);
+    if(type==="income"&&!form.sh)return toast2("Pilih shift",RD);
+    if(!form.cat)return toast2("Pilih kategori",RD);
+    setTxs(p=>[{id:Date.now(),type,amount:a,lokasi:form.lok,shift:form.sh,category:form.cat,note:form.note,penerima:form.recv,photo:form.photo,datetime:nowStr(),user:sess.u},...p]);
+    setForm({amt:"",lok:"",sh:"",cat:"",note:"",recv:"",photo:null});
+    setView("dash");
+    toast2(type==="income"?"Pemasukan dicatat!":"Pengeluaran dicatat!");
+  };
+  const delTx=id=>{setTxs(p=>p.filter(t=>t.id!==id));setDelId(null);toast2("Transaksi dihapus","#fb923c");};
+  const editSave=()=>{const a=parseFloat(editT.v.replace(/\D/g,""));if(!a)return;setTxs(p=>p.map(t=>t.id===editT.id?{...t,amount:a}:t));setEditT(null);toast2("Diperbarui");};
+  const doPhoto=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>setForm(f=>({...f,photo:ev.target.result}));r.readAsDataURL(f);};
+  const addUser=()=>{if(!newU.username.trim())return toast2("Masukkan username",RD);if(newU.password.length<4)return toast2("Password min 4 karakter",RD);if(users.find(u=>u.username.toLowerCase()===newU.username.toLowerCase()))return toast2("Username sudah ada",RD);setUsers(p=>[...p,{id:Date.now(),...newU,username:newU.username.toLowerCase()}]);setNewU({username:"",password:"",role:"kasir"});setStab("members");toast2("Anggota ditambahkan!");};
+  const saveEditU=()=>{if(!editU.username.trim()||editU.password.length<4)return toast2("Data tidak valid",RD);setUsers(p=>p.map(u=>u.id===editU.id?{...u,...editU}:u));setEditU(null);setStab("members");toast2("Diperbarui");};
+  const deleteUser=id=>{if(sess?.id===id)return toast2("Tidak bisa hapus akun sendiri",RD);setUsers(p=>p.filter(u=>u.id!==id));setDelU(null);toast2("Anggota dihapus","#fb923c");};
+
+  const navItems=[{id:"dash",label:"Beranda",sym:"[H]"},{id:"form",label:"Catat",sym:"[+]"},{id:"hist",label:"Riwayat",sym:"[=]"},...(perm.canSetting?[{id:"setting",label:"Setting",sym:"[S]"}]:[])];
+
+  if(!sess) return(
+    <div style={{fontFamily:"'Nunito',sans-serif",background:BG0,minHeight:"100vh",maxWidth:430,margin:"0 auto",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,color:TX,position:"relative",overflow:"hidden"}}>
+      <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet"/>
+      <div style={{position:"absolute",top:"15%",left:"50%",transform:"translateX(-50%)",width:280,height:280,background:"radial-gradient(circle,rgba(245,200,66,.1) 0%,transparent 70%)",pointerEvents:"none"}}/>
+      <div style={{width:76,height:76,borderRadius:24,background:"linear-gradient(135deg,"+G+",#c9a52a)",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:16,boxShadow:"0 8px 40px rgba(245,200,66,.35)",fontSize:32,fontWeight:900,color:"#000"}}>$</div>
+      <div style={{fontWeight:900,fontSize:22,color:G,letterSpacing:.5,marginBottom:4}}>OMSET SAYY GROUP</div>
+      <div style={{fontSize:12,color:TM,marginBottom:30}}>Sistem Pencatatan Keuangan</div>
+      <div style={{...card,width:"100%",padding:26}}>
+        <label style={LS}>Username</label>
+        <input value={lf.u} onChange={e=>setLf(f=>({...f,u:e.target.value}))} placeholder="username..." style={{...IS,marginBottom:14}}/>
+        <label style={LS}>Password</label>
+        <input type="password" value={lf.p} onChange={e=>setLf(f=>({...f,p:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&login()} placeholder="min 4 karakter" style={{...IS,marginBottom:8}}/>
+        {le&&<div style={{color:RD,fontSize:12,marginBottom:10}}>{le}</div>}
+        <button onClick={login} style={{width:"100%",padding:14,marginTop:8,borderRadius:14,border:"none",background:"linear-gradient(135deg,"+G+",#c9a52a)",color:"#000",fontWeight:900,fontSize:15,cursor:"pointer",boxShadow:"0 4px 24px rgba(245,200,66,.35)"}}>Masuk</button>
+      </div>
+      <div style={{marginTop:18,display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center"}}>
+        {users.slice(0,3).map(u=>{const p2=ROLES[u.role]||ROLES.kasir;return <span key={u.id} style={{padding:"3px 10px",borderRadius:8,background:p2.bg,color:p2.color,fontWeight:700,fontSize:11}}>[{p2.label}] {u.username}</span>;})}
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{fontFamily:"'Nunito',sans-serif",background:BG0,minHeight:"100vh",maxWidth:430,margin:"0 auto",color:TX,paddingBottom:86}}>
+      <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet"/>
+
+      {toast&&<div style={{position:"fixed",top:18,left:"50%",transform:"translateX(-50%)",background:toast.c,color:"#000",borderRadius:30,padding:"10px 22px",fontWeight:800,zIndex:1000,fontSize:13,whiteSpace:"nowrap",boxShadow:"0 4px 24px rgba(0,0,0,.5)"}}>{toast.m}</div>}
+
+      {delId&&<Bd onClose={()=>setDelId(null)}>
+        <div style={{...card,padding:26,margin:"0 16px",textAlign:"center"}}>
+          <div style={{width:52,height:52,borderRadius:16,background:"rgba(248,113,113,.15)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px",fontSize:24,color:RD}}>X</div>
+          <div style={{fontWeight:900,fontSize:16,marginBottom:6}}>Hapus Transaksi?</div>
+          <div style={{color:TM,fontSize:13,marginBottom:20}}>Data tidak bisa dikembalikan.</div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>setDelId(null)} style={{flex:1,padding:12,borderRadius:12,border:"1px solid "+BD,background:"transparent",color:TM,fontWeight:700,cursor:"pointer"}}>Batal</button>
+            <button onClick={()=>delTx(delId)} style={{flex:1,padding:12,borderRadius:12,border:"none",background:"linear-gradient(135deg,#ef4444,#dc2626)",color:"#fff",fontWeight:800,cursor:"pointer"}}>Hapus</button>
+          </div>
+        </div>
+      </Bd>}
+
+      {editT&&<Bd onClose={()=>setEditT(null)}>
+        <div style={{...card,padding:26,margin:"0 16px"}}>
+          <div style={{fontWeight:900,fontSize:16,marginBottom:14}}>Edit Nominal</div>
+          <input value={editT.v} inputMode="numeric" onChange={e=>setEditT(t=>({...t,v:fmt(e.target.value)}))} style={{...IS,marginBottom:16,fontSize:22,fontWeight:900,textAlign:"center"}}/>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>setEditT(null)} style={{flex:1,padding:12,borderRadius:12,border:"1px solid "+BD,background:"transparent",color:TM,fontWeight:700,cursor:"pointer"}}>Batal</button>
+            <button onClick={editSave} style={{flex:1,padding:12,borderRadius:12,border:"none",background:"linear-gradient(135deg,#fb923c,#ea580c)",color:"#fff",fontWeight:800,cursor:"pointer"}}>Simpan</button>
+          </div>
+        </div>
+      </Bd>}
+
+      {expM&&<Bd bottom onClose={()=>setExpM(false)}>
+        <div style={{...card,borderRadius:"22px 22px 0 0",padding:26}}>
+          <div style={{fontWeight:900,fontSize:16,marginBottom:20,textAlign:"center",color:G}}>Export Laporan</div>
+          <button onClick={()=>{exportXLS(txs);setExpM(false);toast2("File Excel diunduh!");}} style={{width:"100%",padding:14,marginBottom:10,borderRadius:14,border:"none",background:"linear-gradient(135deg,#22c55e,#15803d)",color:"#fff",fontWeight:800,fontSize:14,cursor:"pointer"}}>Export Excel (.xlsx)</button>
+          <button onClick={()=>{exportPDF(txs);setExpM(false);}} style={{width:"100%",padding:14,marginBottom:14,borderRadius:14,border:"none",background:"linear-gradient(135deg,#ef4444,#b91c1c)",color:"#fff",fontWeight:800,fontSize:14,cursor:"pointer"}}>Export PDF / Print</button>
+          <button onClick={()=>setExpM(false)} style={{width:"100%",padding:12,borderRadius:14,border:"1px solid "+BD,background:"transparent",color:TM,fontWeight:700,cursor:"pointer"}}>Batal</button>
+        </div>
+      </Bd>}
+
+      {delU&&<Bd onClose={()=>setDelU(null)}>
+        <div style={{...card,padding:26,margin:"0 16px",textAlign:"center"}}>
+          <div style={{fontWeight:900,fontSize:16,marginBottom:6}}>Hapus Anggota?</div>
+          <div style={{color:"#fb923c",fontSize:14,fontWeight:800,marginBottom:4}}>{delU.username}</div>
+          <div style={{color:TM,fontSize:12,marginBottom:20}}>Akun ini tidak bisa login lagi.</div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>setDelU(null)} style={{flex:1,padding:12,borderRadius:12,border:"1px solid "+BD,background:"transparent",color:TM,fontWeight:700,cursor:"pointer"}}>Batal</button>
+            <button onClick={()=>deleteUser(delU.id)} style={{flex:1,padding:12,borderRadius:12,border:"none",background:"linear-gradient(135deg,#ef4444,#dc2626)",color:"#fff",fontWeight:800,cursor:"pointer"}}>Hapus</button>
+          </div>
+        </div>
+      </Bd>}
+
+      {editU&&<Bd onClose={()=>setEditU(null)}>
+        <div style={{...card,padding:24,margin:"0 16px"}}>
+          <div style={{fontWeight:900,fontSize:16,marginBottom:16}}>Edit Anggota</div>
+          <label style={LS}>Username</label>
+          <input value={editU.username} onChange={e=>setEditU(u=>({...u,username:e.target.value}))} style={{...IS,marginBottom:12}}/>
+          <label style={LS}>Password</label>
+          <input type="password" value={editU.password} onChange={e=>setEditU(u=>({...u,password:e.target.value}))} style={{...IS,marginBottom:12}}/>
+          <label style={LS}>Role</label>
+          <Chips opts={Object.keys(ROLES)} val={editU.role} set={v=>setEditU(u=>({...u,role:v}))} color={ROLES[editU.role]?.color||G}/>
+          <div style={{display:"flex",gap:10,marginTop:4}}>
+            <button onClick
